@@ -1,0 +1,157 @@
+version: '3.8'
+
+services:
+
+  # ─────────────────────────────────────────
+  # PostgreSQL — raw / staging / warehouse
+  # ─────────────────────────────────────────
+  postgres:
+    image: postgres:15
+    container_name: olist_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d   # scripts run in alphabetical order on first start
+    networks:
+      - olist_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────
+  # pgAdmin — database UI
+  # ─────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: olist_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - olist_network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────
+  # Apache NiFi — CSV ingestion to raw schema
+  # ─────────────────────────────────────────
+  nifi:
+    image: apache/nifi:2.0.0
+    container_name: olist_nifi
+    ports:
+      - "8443:8443"
+    environment:
+      - SINGLE_USER_CREDENTIALS_USERNAME=${NIFI_USER}
+      - SINGLE_USER_CREDENTIALS_PASSWORD=${NIFI_PASSWORD}
+    volumes:
+      - ./data:/opt/nifi/nifi-current/data_in                           # CSV input directory
+      - ./postgresql-42.7.2.jar:/opt/nifi/nifi-current/postgresql-42.7.2.jar  # JDBC driver
+      - ./nifi/NiFi_Flow.json:/opt/nifi/nifi-current/nifi_flow_import.json    # flow for manual import
+      - nifi_conf:/opt/nifi/nifi-current/conf
+      - nifi_state:/opt/nifi/nifi-current/state
+    networks:
+      - olist_network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────
+  # Apache Airflow — pipeline orchestration
+  # ─────────────────────────────────────────
+  airflow:
+    image: apache/airflow:2.9.1
+    container_name: olist_airflow
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@olist_postgres/${POSTGRES_DB}
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__WEBSERVER__SECRET_KEY=${AIRFLOW_SECRET_KEY}
+      - _AIRFLOW_WWW_USER_USERNAME=${AIRFLOW_ADMIN_USER}
+      - _AIRFLOW_WWW_USER_PASSWORD=${AIRFLOW_ADMIN_PASSWORD}
+      # Pass DB credentials through so DAGs can use them
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+    ports:
+      - "8080:8080"
+    command: standalone
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - olist_network
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────
+  # Elasticsearch — document indexing
+  # ─────────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.10
+    container_name: olist_elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks:
+      - olist_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"\\|\"status\":\"yellow\"'"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────
+  # Kibana — dashboards & visualization
+  # ─────────────────────────────────────────
+  kibana:
+    image: docker.elastic.co/kibana/kibana:7.17.10
+    container_name: olist_kibana
+    environment:
+      - ELASTICSEARCH_HOSTS=http://olist_elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - olist_network
+    restart: unless-stopped
+
+# ─────────────────────────────────────────
+# Named volumes — data persists across restarts
+# ─────────────────────────────────────────
+volumes:
+  postgres_data:
+  nifi_conf:
+  nifi_state:
+  airflow_logs:
+  airflow_plugins:
+  elasticsearch_data:
+
+# ─────────────────────────────────────────
+# Internal network
+# ─────────────────────────────────────────
+networks:
+  olist_network:
+    driver: bridge

@@ -1,0 +1,35 @@
+# Environment — never commit real credentials
+.env
+
+# Large data files
+data/*.csv
+data/*.json
+data/*.parquet
+
+# NiFi runtime directories
+nifi/logs/
+nifi/content_repository/
+nifi/database_repository/
+nifi/flowfile_repository/
+nifi/provenance_repository/
+nifi/work/
+
+# Airflow runtime
+airflow/logs/
+airflow/plugins/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
